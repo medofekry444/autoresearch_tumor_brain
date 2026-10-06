@@ -1,0 +1,24 @@
+[project]
+name = "autoresearch-tumor-brain"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "langchain>=1.4.3",
+    "langchain-openrouter>=0.2.9",
+    "matplotlib>=3.10.9",
+    "openrouter>=0.11.46",
+    "python-dotenv>=1.2.4",
+    "torch>=2.14.1",
+    "torchvision>=0.29.1",
+]
+
+[project.scripts]
+autoresearch-tumor-brain = "autoresearch_tumor_brain:main"
+
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13.0"]
+build-backend = "uv_build"
+[tool.uv]
+package = false
