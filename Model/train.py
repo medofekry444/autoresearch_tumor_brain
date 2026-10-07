@@ -1,15 +1,25 @@
 import csv
-from pathlib import Path
+import os
+import random
 import time
+from pathlib import Path
+
+import numpy as np
 import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
-import random
-import numpy as np
+# ======================= FIXED SECTION (do not edit) =======================
+SEED = 42
+SMOKE = bool(os.environ.get("SMOKE_TEST"))   # quick crash test used by the agent
+NORM_MEAN = (0.5, 0.5, 0.5)
+NORM_STD = (0.5, 0.5, 0.5)
 
-SEED = 42  # ثابت: خارج مناطق التعديل
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+LOG_FILE = BASE_DIR / "training_log.csv"
+TIME_BUDGET_SECONDS = 300  # 5 minutes maximum runtime
 
 
 def set_seed(seed: int = SEED) -> None:
@@ -25,14 +35,8 @@ def seed_worker(worker_id: int) -> None:
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
     random.seed(worker_seed)
+# ===========================================================================
 
-
-# 1. Paths relative to this file
-BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-LOG_FILE = BASE_DIR / "training_log.csv"
-
-# 2. Hyperparameters & Constraints
 # -------------------- MUTABLE ZONE 1: HYPERPARAMETERS --------------------
 BATCH_SIZE = 32
 IMAGE_SIZE = 128
@@ -40,10 +44,8 @@ EPOCHS = 25
 LEARNING_RATE = 2e-3
 DROPOUT_RATE = 0.5
 # -------------------------------------------------------------------------
-TIME_BUDGET_SECONDS = 300  # 5 minutes maximum runtime 
 
 
-# 3. Model Architecture
 # -------------------- MUTABLE ZONE 2: MODEL ARCHITECTURE -----------------
 class BrainTumorCNN(nn.Module):
     def __init__(self, num_classes: int = 4):
@@ -72,19 +74,28 @@ class BrainTumorCNN(nn.Module):
         return self.classifier(x)
 # -------------------------------------------------------------------------
 
-# 4. Training and Evaluation Pipeline
+
 def run_training() -> None:
     set_seed()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-# ---------------- MUTABLE ZONE 3: PREPROCESSING & AUGMENTATION ---------
-    tf = transforms.Compose([
+    # ---------------- MUTABLE ZONE 3: PREPROCESSING & AUGMENTATION ---------
+    # Training transforms only. Add augmentation between Resize and ToTensor
+    # (PIL-image transforms), e.g. transforms.RandomHorizontalFlip(p=0.5).
+    train_tf = transforms.Compose([
         transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        transforms.Normalize(NORM_MEAN, NORM_STD),
     ])
     # ----------------------------------------------------------------------
+
+    # Validation transforms: fixed, never augmented.
+    eval_tf = transforms.Compose([
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize(NORM_MEAN, NORM_STD),
+    ])
 
     train_path = DATA_DIR / "Training"
     test_path = DATA_DIR / "Testing"
@@ -93,8 +104,8 @@ def run_training() -> None:
             f"Dataset folders were not found at {DATA_DIR}. Expected 'Training' and 'Testing'."
         )
 
-    train_ds = datasets.ImageFolder(train_path, transform=tf)
-    test_ds = datasets.ImageFolder(test_path, transform=tf)
+    train_ds = datasets.ImageFolder(train_path, transform=train_tf)
+    test_ds = datasets.ImageFolder(test_path, transform=eval_tf)
 
     g = torch.Generator()
     g.manual_seed(SEED)
@@ -120,9 +131,9 @@ def run_training() -> None:
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE)
     criterion = nn.CrossEntropyLoss()
 
-    with open(LOG_FILE, mode="w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["epoch", "train_loss", "val_loss", "val_accuracy"])
+    if not SMOKE:
+        with open(LOG_FILE, mode="w", newline="") as f:
+            csv.writer(f).writerow(["epoch", "train_loss", "val_loss", "val_accuracy"])
 
     best_val_loss = float("inf")
     start_time = time.time()
@@ -131,7 +142,7 @@ def run_training() -> None:
         model.train()
         running_train_loss = 0.0
 
-        for x, y in train_dl:
+        for i, (x, y) in enumerate(train_dl):
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
             logits = model(x)
@@ -139,27 +150,31 @@ def run_training() -> None:
             loss.backward()
             optimizer.step()
             running_train_loss += loss.item() * x.size(0)
+            if SMOKE and i >= 1:
+                break
 
         epoch_train_loss = running_train_loss / len(train_dl.dataset)
 
-        # Validation phase
         model.eval()
         running_val_loss = 0.0
         correct = 0
 
         with torch.no_grad():
-            for x, y in test_dl:
+            for j, (x, y) in enumerate(test_dl):
                 x, y = x.to(device), y.to(device)
                 logits = model(x)
                 running_val_loss += criterion(logits, y).item() * y.size(0)
-                preds = logits.argmax(dim=1)
-                correct += (preds == y).sum().item()
+                correct += (logits.argmax(dim=1) == y).sum().item()
+                if SMOKE and j >= 1:
+                    break
+
+        if SMOKE:
+            print("--- SMOKE OK ---")
+            return
 
         epoch_val_loss = running_val_loss / len(test_dl.dataset)
         epoch_val_acc = 100.0 * correct / len(test_dl.dataset)
-
-        if epoch_val_loss < best_val_loss:
-            best_val_loss = epoch_val_loss
+        best_val_loss = min(best_val_loss, epoch_val_loss)
 
         elapsed_seconds = time.time() - start_time
         print(
@@ -171,10 +186,8 @@ def run_training() -> None:
         )
 
         with open(LOG_FILE, mode="a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([epoch + 1, epoch_train_loss, epoch_val_loss, epoch_val_acc])
+            csv.writer(f).writerow([epoch + 1, epoch_train_loss, epoch_val_loss, epoch_val_acc])
 
-        # Enforce strict 5-minute time budget
         if elapsed_seconds >= TIME_BUDGET_SECONDS:
             print(f"\n[TIME LIMIT REACHED] Stopped training after {elapsed_seconds:.1f}s.")
             break
