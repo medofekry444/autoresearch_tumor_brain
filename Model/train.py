@@ -1,5 +1,6 @@
 import csv
 from pathlib import Path
+import time
 import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
@@ -10,15 +11,19 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 LOG_FILE = BASE_DIR / "training_log.csv"
 
-# 2. Hyperparameters (The Agent is allowed to mutate these)
+# 2. Hyperparameters & Constraints
+# -------------------- MUTABLE ZONE 1: HYPERPARAMETERS --------------------
 BATCH_SIZE = 32
 IMAGE_SIZE = 128
 EPOCHS = 25
 LEARNING_RATE = 1e-4
 DROPOUT_RATE = 0.5
+# -------------------------------------------------------------------------
+TIME_BUDGET_SECONDS = 300  # 5 minutes maximum runtime 
 
 
-# 3. Model Architecture (The Agent is allowed to mutate this)
+# 3. Model Architecture
+# -------------------- MUTABLE ZONE 2: MODEL ARCHITECTURE -----------------
 class BrainTumorCNN(nn.Module):
     def __init__(self, num_classes: int = 4):
         super().__init__()
@@ -44,20 +49,20 @@ class BrainTumorCNN(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.features(x)
         return self.classifier(x)
-
+# -------------------------------------------------------------------------
 
 # 4. Training and Evaluation Pipeline
 def run_training() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    tf = transforms.Compose(
-        [
-            transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-        ]
-    )
+# ---------------- MUTABLE ZONE 3: PREPROCESSING & AUGMENTATION ---------
+    tf = transforms.Compose([
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+    ])
+    # ----------------------------------------------------------------------
 
     train_path = DATA_DIR / "Training"
     test_path = DATA_DIR / "Testing"
@@ -93,6 +98,7 @@ def run_training() -> None:
         writer.writerow(["epoch", "train_loss", "val_loss", "val_accuracy"])
 
     best_val_loss = float("inf")
+    start_time = time.time()
 
     for epoch in range(EPOCHS):
         model.train()
@@ -128,16 +134,23 @@ def run_training() -> None:
         if epoch_val_loss < best_val_loss:
             best_val_loss = epoch_val_loss
 
+        elapsed_seconds = time.time() - start_time
         print(
             f"Epoch {epoch + 1:02d}/{EPOCHS:02d} | "
             f"Train Loss: {epoch_train_loss:.4f} | "
             f"Val Loss: {epoch_val_loss:.4f} | "
-            f"Val Acc: {epoch_val_acc:.2f}%"
+            f"Val Acc: {epoch_val_acc:.2f}% | "
+            f"Elapsed: {elapsed_seconds:.1f}s"
         )
 
         with open(LOG_FILE, mode="a", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([epoch + 1, epoch_train_loss, epoch_val_loss, epoch_val_acc])
+
+        # Enforce strict 5-minute time budget
+        if elapsed_seconds >= TIME_BUDGET_SECONDS:
+            print(f"\n[TIME LIMIT REACHED] Stopped training after {elapsed_seconds:.1f}s.")
+            break
 
     # Standardized output line for the AutoResearch runner to parse
     print(f"--- METRIC: val_loss={best_val_loss:.5f} ---")
