@@ -16,7 +16,7 @@ LOG_FILE = BASE_DIR / "training_log.csv"
 BATCH_SIZE = 32
 IMAGE_SIZE = 128
 EPOCHS = 25
-LEARNING_RATE = 3e-4
+LEARNING_RATE = 5e-4
 DROPOUT_RATE = 0.5
 # -------------------------------------------------------------------------
 TIME_BUDGET_SECONDS = 300  # 5 minutes maximum runtime 
