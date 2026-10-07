@@ -6,6 +6,27 @@ from torch import nn, optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
+import random
+import numpy as np
+
+SEED = 42  # ثابت: خارج مناطق التعديل
+
+
+def set_seed(seed: int = SEED) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def seed_worker(worker_id: int) -> None:
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
 # 1. Paths relative to this file
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -53,6 +74,7 @@ class BrainTumorCNN(nn.Module):
 
 # 4. Training and Evaluation Pipeline
 def run_training() -> None:
+    set_seed()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -74,12 +96,17 @@ def run_training() -> None:
     train_ds = datasets.ImageFolder(train_path, transform=tf)
     test_ds = datasets.ImageFolder(test_path, transform=tf)
 
+    g = torch.Generator()
+    g.manual_seed(SEED)
+
     train_dl = DataLoader(
         train_ds,
         batch_size=BATCH_SIZE,
         shuffle=True,
         num_workers=4,
         pin_memory=torch.cuda.is_available(),
+        worker_init_fn=seed_worker,
+        generator=g,
     )
     test_dl = DataLoader(
         test_ds,
