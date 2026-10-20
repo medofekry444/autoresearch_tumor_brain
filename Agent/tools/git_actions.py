@@ -1,45 +1,127 @@
 import subprocess
-import sys
 from pathlib import Path
-
-Base_url = Path(__file__).resolve().parents[2]
-sys.path.append(str(Base_url))
-from paths import get_paths
-
-file_path = get_paths().get("train_path")
 
 
 class GitActions:
-    def __init__(self, target_file=None):
+    """Manage version control for an agent-controlled file."""
 
-        self.target_file = str(target_file) if target_file else None
+    def __init__(self, target_file, repo_path=None):
+        self.target_file = Path(target_file).resolve()
+
+        if repo_path is None:
+            result = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.target_file.parent),
+                    "rev-parse",
+                    "--show-toplevel",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            repo_path = result.stdout.strip()
+
+        self.repo_path = Path(repo_path).resolve()
+
+        if not self.target_file.is_relative_to(self.repo_path):
+            raise ValueError(
+                "Target file must be inside the Git repository."
+            )
+
+        self.relative_target = str(
+            self.target_file.relative_to(self.repo_path)
+        )
 
     def _run(self, *args):
-        return subprocess.run(["git", *args], check=True, capture_output=True, text=True)
+        """Execute a Git command in the configured repository."""
+        return subprocess.run(
+            ["git", *args],
+            cwd=self.repo_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
     def commit(self, message="Auto commit by agent"):
+        """Commit changes to the agent-controlled file only."""
         try:
-            stage_target = self.target_file or "."
-            self._run("add", stage_target)
-            if subprocess.run(["git", "diff", "--cached", "--quiet"]).returncode == 0:
+            self._run("add", "--", self.relative_target)
+
+            result = subprocess.run(
+                [
+                    "git",
+                    "diff",
+                    "--cached",
+                    "--quiet",
+                    "--",
+                    self.relative_target,
+                ],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+            )
+
+            if result.returncode == 0:
                 return "Nothing to commit."
-            self._run("commit", "-m", message)
+
+            if result.returncode != 1:
+                return (
+                    "Error checking staged changes: "
+                    + result.stderr.strip()
+                )
+
+            # Path-scoped commit avoids including unrelated staged files.
+            self._run(
+                "commit",
+                "-m",
+                message,
+                "--only",
+                "--",
+                self.relative_target,
+            )
+
             return "Changes committed successfully."
-        except subprocess.CalledProcessError as e:
-            return f"Error during git commit: {(e.stderr or str(e)).strip()}"
+
+        except subprocess.CalledProcessError as error:
+            return (
+                "Error during git commit: "
+                + (error.stderr or str(error)).strip()
+            )
 
     def push(self):
+        """Push the current branch to its configured remote."""
         try:
-            res=self._run("push")
-            return f"Changes pushed successfully.{res.stdout.strip()}"
-        except subprocess.CalledProcessError as e:
-            return f"Error during git push: {(e.stderr or str(e)).strip()}"
+            result = self._run("push")
+
+            return (
+                "Changes pushed successfully. "
+                + result.stdout.strip()
+            )
+
+        except subprocess.CalledProcessError as error:
+            return (
+                "Error during git push: "
+                + (error.stderr or str(error)).strip()
+            )
 
     def reset(self):
-        if not self.target_file:
-            return "Error: reset requires a target_file to avoid wiping the whole repo."
+        """Restore only the target file to its last committed state."""
         try:
-            self._run("checkout", "--", self.target_file)
+            self._run(
+                "restore",
+                "--source=HEAD",
+                "--staged",
+                "--worktree",
+                "--",
+                self.relative_target,
+            )
+
             return "File restored to last commit."
-        except subprocess.CalledProcessError as e:
-            return f"Error during git reset: {(e.stderr or str(e)).strip()}"
+
+        except subprocess.CalledProcessError as error:
+            return (
+                "Error during git reset: "
+                + (error.stderr or str(error)).strip()
+            )

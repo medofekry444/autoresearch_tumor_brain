@@ -42,7 +42,7 @@ BATCH_SIZE = 32
 IMAGE_SIZE = 128
 EPOCHS = 25
 LEARNING_RATE = 2e-3
-DROPOUT_RATE = 0.5
+DROPOUT_RATE = 0.6
 # -------------------------------------------------------------------------
 
 

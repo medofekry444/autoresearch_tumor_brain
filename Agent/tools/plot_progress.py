@@ -1,52 +1,74 @@
-import os
-import sys
 import csv
-import matplotlib.pyplot as plt
 from pathlib import Path
-import Agent.agent as agent
 
-current_file = Path(__file__).resolve()
-project_root = current_file.parents[2]    
-progress_path = project_root / "progress.csv"  
-
-
-if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
+import matplotlib.pyplot as plt
 
 
 def plot_progress(progress_path):
+    progress_path = Path(progress_path)
 
-    if not Path(progress_path).exists():
+    if not progress_path.is_file():
         print(f"Error: File not found at {progress_path}")
         return
 
-    with open(progress_path, mode="r") as f:
+    experiments = []
+    val_losses = []
+
+    with progress_path.open("r", newline="", encoding="utf-8") as f:
         reader = csv.reader(f)
+
         try:
-            header = next(reader)
+            next(reader)  # Skip header
         except StopIteration:
             print("The CSV file is empty.")
             return
-        
-        rows = list(reader)
-        num_rows = len(rows)
-        is_end_loop = getattr(agent, 'end_loop', False)
-        
-        if num_rows > 0 and is_end_loop:
-            experiments = [int(row[0]) for row in rows]
-            val_loss = [float(row[1]) for row in rows]
-            
-            plt.figure(figsize=(10, 6))
-            plt.plot(experiments, val_loss, label="Validation Loss over Experiments", marker='o')
-            plt.xlabel("Experiment")
-            plt.ylabel("Loss")
-            plt.title("Validation Loss")
-            plt.legend()
-            plt.grid()
-            plt.show()
-        else:
-            print(f"Skipping plot. Rows: {num_rows}, agent.end_loop: {is_end_loop}")
+
+        for row in reader:
+            if len(row) < 2:
+                continue
+
+            try:
+                experiment = int(row[0])
+                val_loss = float(row[1])
+            except ValueError:
+                # Skip crashed experiments or invalid rows
+                continue
+
+            experiments.append(experiment)
+            val_losses.append(val_loss)
+
+    if not experiments:
+        print("No valid experiment results to plot.")
+        return
+
+    plt.figure(figsize=(10, 6))
+
+    plt.plot(
+        experiments,
+        val_losses,
+        marker="o",
+        label="Validation Loss",
+    )
+
+    plt.xlabel("Experiment")
+    plt.ylabel("Validation Loss")
+    plt.title("Validation Loss over Experiments")
+
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+
+    # Save plot next to progress.csv
+    output_path = progress_path.with_name("progress.png")
+    plt.savefig(output_path, dpi=300)
+
+    print(f"Plot saved to: {output_path}")
+
+    plt.close()
 
 
 if __name__ == "__main__":
-    plot_progress(progress_path)
+    from paths import get_paths
+
+    paths = get_paths()
+    plot_progress(paths["progress_path"])

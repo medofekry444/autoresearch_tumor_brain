@@ -1,95 +1,177 @@
-
 import csv
 import json
+import math
 import re
 from pathlib import Path
 
+
 class output_handeling:
+    """Parse agent responses, training output, and experiment logs."""
 
+    @staticmethod
     def clean_output(text: str) -> str:
-        """Remove qwen3 <think> blocks."""
-        return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        """Remove model thinking blocks."""
+        return re.sub(
+            r"<think>.*?</think>",
+            "",
+            text or "",
+            flags=re.DOTALL,
+        ).strip()
 
-
+    @staticmethod
     def extract_tool_call(text: str):
-        """Find the tool-call JSON in the model reply. Returns a dict or None."""
-        candidates = []
-        m = re.search(r"```json\s*(\{.*\})\s*```", text, re.DOTALL)
-        if m:
-            candidates.append(m.group(1))
-        raw = re.search(r"(\{.*\})", text, re.DOTALL)
-        if raw:
-            candidates.append(raw.group(1))
-        for c in candidates:
+        """Extract the first valid tool-call JSON object."""
+        decoder = json.JSONDecoder()
+
+        for match in re.finditer(r"\{", text or ""):
             try:
-                data = json.loads(c)
-                if isinstance(data, dict) and "tool" in data:
+                data, _ = decoder.raw_decode(text[match.start():])
+
+                if isinstance(data, dict) and isinstance(data.get("tool"), str):
                     return data
+
             except json.JSONDecodeError:
                 continue
+
         return None
 
-
+    @staticmethod
     def normalize_call(tool_data: dict):
-        """Tolerate common formatting mistakes. Returns (tool_name, action, arguments)."""
-        arguments = dict(tool_data.get("arguments") or {})
+        """Normalize a model-generated tool call."""
+        raw_arguments = tool_data.get("arguments") or {}
+
+        if not isinstance(raw_arguments, dict):
+            return tool_data.get("tool"), None, {}
+
+        arguments = raw_arguments.copy()
         action = arguments.get("action") or tool_data.get("action")
+
         if not arguments.get("updates") and tool_data.get("updates"):
             arguments["updates"] = tool_data["updates"]
-        u = arguments.get("updates")
-        if isinstance(u, dict) and "exact_text" in u and "replacement_text" in u:
-            arguments["updates"] = {u["exact_text"]: u["replacement_text"]}
+
+        updates = arguments.get("updates")
+
+        if (
+            isinstance(updates, dict)
+            and "exact_text" in updates
+            and "replacement_text" in updates
+        ):
+            arguments["updates"] = {
+                updates["exact_text"]: updates["replacement_text"]
+            }
+
         return tool_data.get("tool"), action, arguments
 
-
+    @staticmethod
     def parse_val_loss(output: str):
-        """Read the METRIC line printed by train.py. Returns float or None."""
-        m = re.search(r"METRIC:\s*val_loss=([0-9.]+)", output or "")
-        return float(m.group(1)) if m else None
+        """Extract a finite validation loss from training output."""
+        matches = re.findall(
+            r"METRIC:\s*val_loss\s*=\s*"
+            r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)",
+            output or "",
+        )
 
+        if not matches:
+            return None
 
+        value = float(matches[-1])
+
+        return value if math.isfinite(value) else None
+
+    @staticmethod
     def error_summary(text: str) -> str:
-        """Last 'XxxError: ...' line, or the last non-empty line."""
-        lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+        """Return the last exception or error message."""
+        lines = [
+            line.strip()
+            for line in (text or "").splitlines()
+            if line.strip()
+        ]
+
         for line in reversed(lines):
-            if re.match(r"^\w*(Error|Exception)\b", line):
+            if re.search(r"\b\w*(?:Error|Exception):", line):
                 return line[:300]
+
         return lines[-1][:300] if lines else "no output"
 
-
+    @staticmethod
     def describe_updates(updates: dict) -> str:
-        """Short one-line description of an edit, for the experiment log."""
-        return "; ".join(f"{o.strip()[:40]} -> {str(n).strip()[:40]}" for o, n in updates.items())
+        """Generate a short description of code modifications."""
+        return "; ".join(
+            f"{str(old).strip()[:40]} -> {str(new).strip()[:40]}"
+            for old, new in updates.items()
+        )
 
-
+    @staticmethod
     def truncate(text, limit: int) -> str:
-        return str(text)[:limit]
+        """Limit the length of a tool response."""
+        return str(text)[:max(0, limit)]
 
-
+    @staticmethod
     def log_progress(progress_file, exp, value) -> None:
-        """Append one row to progress.csv (creates the file and header if needed)."""
+        """Append an experiment result to progress.csv."""
         progress_file = Path(progress_file)
         progress_file.parent.mkdir(parents=True, exist_ok=True)
-        new_file = not progress_file.exists()
-        with open(progress_file, "a", newline="") as f:
-            w = csv.writer(f)
+
+        new_file = (
+            not progress_file.exists()
+            or progress_file.stat().st_size == 0
+        )
+
+        with progress_file.open(
+            "a",
+            newline="",
+            encoding="utf-8",
+        ) as file:
+            writer = csv.writer(file)
+
             if new_file:
-                w.writerow(["expermint", "val_loss"])
-            w.writerow([exp, value])
+                writer.writerow(["experiment", "val_loss"])
 
+            writer.writerow([exp, value])
 
-    def build_state(code: str, best_val_loss: float, experiment_log: list) -> str:
-        """Current mutable zones + best score + past experiments, sent to the model."""
-        zones = re.findall(r"# -+ MUTABLE ZONE[^\n]*\n(.*?)# -{10,}", code, re.DOTALL)
-        zone_text = "\n---\n".join(z.rstrip() for z in zones) or code[:3000]
-        best = f"{best_val_loss:.5f}" if best_val_loss != float("inf") else "none yet"
+    @staticmethod
+    def build_state(
+        code: str,
+        best_val_loss: float,
+        experiment_log: list,
+    ) -> str:
+        """Build the experiment state supplied to the model."""
+        zones = re.findall(
+            r"# -+ MUTABLE ZONE[^\n]*\n(.*?)# -{10,}",
+            code,
+            re.DOTALL,
+        )
+
+        zone_text = (
+            "\n---\n".join(zone.rstrip() for zone in zones)
+            or code[:3000]
+        )
+
+        best = (
+            f"{best_val_loss:.5f}"
+            if math.isfinite(best_val_loss)
+            else "none yet"
+        )
+
         past = "\n".join(experiment_log[-15:]) or "(none)"
-        return (f"CURRENT train.py mutable zones:\n{zone_text}\n\n"
-                f"BEST val_loss so far: {best}\n"
-                f"Past experiments (do NOT repeat):\n{past}")
 
+        return (
+            f"CURRENT train.py mutable zones:\n{zone_text}\n\n"
+            f"BEST val_loss so far: {best}\n"
+            f"Past experiments (do NOT repeat):\n{past}"
+        )
 
-    def format_result(tool_name, action, tool_output, state: str) -> str:
-        """The message sent back to the model after each tool call."""
-        return (f"Result of {tool_name}/{action}:\n{tool_output}\n\n"
-                f"{state}\n\nContinue. /no_think")
+    @staticmethod
+    def format_result(
+        tool_name,
+        action,
+        tool_output,
+        state: str,
+    ) -> str:
+        """Format a tool result for the next agent message."""
+        return (
+            f"Result of {tool_name}/{action}:\n"
+            f"{tool_output}\n\n"
+            f"{state}\n\n"
+            "Continue. /no_think"
+        )
