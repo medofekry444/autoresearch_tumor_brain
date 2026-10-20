@@ -11,7 +11,7 @@ An autonomous research agent, inspired by Andrej Karpathy's [autoresearch](https
 
 ```
         +--------------------------------------------+
-        |  LLM (qwen3:4b via Ollama)                 |
+        |  LLM (gemini api)                 |
         |  reads program.md + current code           |
         |  proposes ONE small edit as JSON           |
         +----------------------+---------------------+
